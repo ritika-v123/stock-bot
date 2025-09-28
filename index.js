@@ -224,3 +224,15 @@ main().catch(async (error) => {
   console.error("❌ Startup error:", error.message);
   await sendTelegramMessage(`❌ Bot failed to start: ${error.message}`);
 });
+const express = require("express");
+const app = express();
+
+app.get("/", (req, res) => {
+  res.send("✅ Stock Bot is running!");
+});
+
+// Render needs a port to listen on
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
