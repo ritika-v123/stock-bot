@@ -224,15 +224,18 @@ main().catch(async (error) => {
   console.error("❌ Startup error:", error.message);
   await sendTelegramMessage(`❌ Bot failed to start: ${error.message}`);
 });
+
+
 const express = require("express");
 const app = express();
 
+// Health check endpoint
 app.get("/", (req, res) => {
-  res.send("✅ Stock Bot is running!");
+  res.send("✅ Stock Bot is running on Render!");
 });
 
-// Render needs a port to listen on
+// Render requires binding to a port
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
