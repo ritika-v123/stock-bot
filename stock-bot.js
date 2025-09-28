@@ -3,8 +3,8 @@ const cron = require("node-cron");
 const fs = require("fs");
 
 // Configuration
-const BOT_TOKEN = "8285018516:AAFfLO6o6aofB2S8W0eQV7-NA0JHpDyvCkM";
-const CHAT_ID = "1642232617";
+const BOT_TOKEN =  process.env.BOT_TOKEN;
+const CHAT_ID = process.env.CHAT_ID;
 
 // Load stock symbols from file (symbols.txt)
 const stockSymbols = fs.readFileSync("symbols.txt", "utf-8")
