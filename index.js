@@ -198,10 +198,11 @@ async function main() {
     console.log("🏃‍♂️ Running initial stock check...");
     await checkStocks();
 
-    cron.schedule("*/15 * * * *", async () => {
-      console.log("\n⏰ Scheduled check triggered...");
-      await checkStocks();
-    });
+   cron.schedule("*/15 * * * *", async () => {
+  await checkStocks();
+}, {
+  timezone: "Asia/Kolkata"
+});
 
     console.log("⏰ Scheduled to check stocks every 15 minutes");
   }, 10000);
