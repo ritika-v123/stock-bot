@@ -1,10 +1,15 @@
 const axios = require("axios");
 const cron = require("node-cron");
 const fs = require("fs");
-
+const express = require("express");
 // Configuration
 const BOT_TOKEN = "8285018516:AAFfLO6o6aofB2S8W0eQV7-NA0JHpDyvCkM";
 const CHAT_ID = "1642232617";
+
+if (!BOT_TOKEN || !CHAT_ID) {
+  console.error("❌ BOT_TOKEN or CHAT_ID missing! Set them as environment variables.");
+  process.exit(1);
+}
 
 // Load stock symbols from file (symbols.txt)
 const stockSymbols = fs.readFileSync("symbols.txt", "utf-8")
@@ -24,14 +29,8 @@ async function sendTelegramMessage(message) {
 
     const response = await axios.post(
       `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
-      {
-        chat_id: String(CHAT_ID),
-        text: message,
-      },
-      {
-        headers: { "Content-Type": "application/json" },
-        timeout: 15000,
-      }
+      { chat_id: String(CHAT_ID), text: message },
+      { headers: { "Content-Type": "application/json" }, timeout: 15000 }
     );
 
     console.log(`✅ Message sent (ID: ${response.data.result.message_id})`);
@@ -48,7 +47,7 @@ async function fetchStockPrice(symbol) {
     console.log(`🔍 Fetching ${symbol}...`);
 
     const response = await axios.get(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`,
+      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=3mo`,
       {
         timeout: 12000,
         headers: {
@@ -61,16 +60,33 @@ async function fetchStockPrice(symbol) {
     const result = response.data?.chart?.result?.[0];
     if (!result) return null;
 
-    const price = result.meta?.regularMarketPrice; // Current price
-    const prevClose = result.meta?.chartPreviousClose; // Yesterday's close
+    const price = result.meta?.regularMarketPrice;
+    const prevClose = result.meta?.chartPreviousClose;
+
+    const closes = result.indicators?.quote?.[0]?.close || [];
+    const validCloses = closes.filter(c => c !== null && !isNaN(c));
+
+    let avg3m = null;
+    let avg1w = null;
+
+    if (validCloses.length > 0) {
+      // 3 months avg
+      const sum3m = validCloses.reduce((a, b) => a + b, 0);
+      avg3m = sum3m / validCloses.length;
+
+      // 1 week avg (last 7 closes)
+      const last7 = validCloses.slice(-7);
+      if (last7.length > 0) {
+        const sum1w = last7.reduce((a, b) => a + b, 0);
+        avg1w = sum1w / last7.length;
+      }
+    }
 
     if (price && prevClose) {
       console.log(
-        `✅ ${symbol}: Current ₹${price.toFixed(
-          2
-        )}, PrevClose ₹${prevClose.toFixed(2)}`
+        `✅ ${symbol}: Current ₹${price.toFixed(2)}, PrevClose ₹${prevClose.toFixed(2)}, 1W Avg ₹${avg1w?.toFixed(2)}, 3M Avg ₹${avg3m?.toFixed(2)}`
       );
-      return { price, prevClose };
+      return { price, prevClose, avg3m, avg1w };
     } else {
       console.log(`⚠️ ${symbol}: Missing price/close data`);
       return null;
@@ -95,20 +111,20 @@ async function checkStocks() {
       const data = await fetchStockPrice(stock.symbol);
 
       if (data) {
-        const { price, prevClose } = data;
-
+        const { price, prevClose, avg3m, avg1w } = data;
         const change = price - prevClose;
         const changePercent = (change / prevClose) * 100;
 
         console.log(
           `📊 ${stock.name}: Current=₹${price.toFixed(
             2
-          )}, PrevClose=₹${prevClose.toFixed(2)}, Change=${changePercent.toFixed(
+          )}, PrevClose=₹${prevClose.toFixed(
             2
-          )}%`
+          )}, 1W Avg=₹${avg1w?.toFixed(2)}, 3M Avg=₹${avg3m?.toFixed(
+            2
+          )}, Change=${changePercent.toFixed(2)}%`
         );
 
-        // Alert threshold = 3% change
         if (Math.abs(changePercent) >= 2.5) {
           const direction = change > 0 ? "📈 INCREASED" : "📉 DECREASED";
           const emoji = change > 0 ? "⬆️" : "⬇️";
@@ -117,6 +133,8 @@ async function checkStocks() {
 
 💰 Current Price: ₹${price.toFixed(2)}
 📊 Previous Close: ₹${prevClose.toFixed(2)}
+📉 1W Average: ₹${avg1w ? avg1w.toFixed(2) : "N/A"}
+📉 3M Average: ₹${avg3m ? avg3m.toFixed(2) : "N/A"}
 💹 Change: ${change > 0 ? "+" : ""}₹${change.toFixed(2)}
 📊 Percentage: ${changePercent > 0 ? "+" : ""}${changePercent.toFixed(2)}%
 ⏰ Time: ${new Date().toLocaleTimeString()}`;
@@ -124,19 +142,13 @@ async function checkStocks() {
           const sent = await sendTelegramMessage(message);
           if (sent) messagesCount++;
         } else {
-          console.log(
-            `📊 ${stock.name}: Change too small (${changePercent.toFixed(
-              2
-            )}%), not alerting`
-          );
+          console.log(`📊 ${stock.name}: Change too small, no alert`);
         }
       } else {
         console.log(`❌ Failed to get price for ${stock.name}`);
       }
 
-      // Delay to avoid rate limiting
       if (i < stockList.length - 1) {
-        console.log("⏳ Waiting 3 seconds before next stock...");
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     } catch (error) {
@@ -148,7 +160,6 @@ async function checkStocks() {
   console.log(`📤 Messages sent: ${messagesCount}`);
   console.log(`📊 Stocks tracked: ${stockList.length}`);
 
-  // Summary message if no alerts
   if (messagesCount === 0) {
     await sendTelegramMessage(`📊 Stock Check Complete ✅
 
@@ -160,19 +171,17 @@ Time: ${new Date().toLocaleTimeString()}`);
 // ==================== STARTUP TEST ====================
 async function testBotOnStartup() {
   console.log("🧪 Testing bot connectivity...");
-
   return await sendTelegramMessage(`🚀 Stock Bot Started! 
 
 ✅ Bot is online and ready
 📊 Tracking: ${stockList.map((s) => s.name).join(", ")}
 ⏰ Started: ${new Date().toLocaleString()}
-🔄 Check interval: Every 5 minutes`);
+🔄 Check interval: Every 15 minutes`);
 }
 
 // ==================== MAIN ====================
 async function main() {
   console.log("🚀 Starting Stock Bot...");
-  console.log(`🔗 Using Telegram Bot: ${BOT_TOKEN}`);
   console.log(`👤 Sending to: ${CHAT_ID}`);
 
   const botWorking = await testBotOnStartup();
@@ -182,17 +191,13 @@ async function main() {
   }
 
   console.log("✅ Bot test successful!");
-  console.log(
-    "📊 Stocks to monitor:",
-    stockList.map((s) => `${s.name} (${s.symbol})`).join(", ")
-  );
+  console.log("📊 Stocks to monitor:", stockList.map((s) => `${s.name} (${s.symbol})`).join(", "));
 
   // Initial check after 10 seconds
   setTimeout(async () => {
     console.log("🏃‍♂️ Running initial stock check...");
     await checkStocks();
 
-    // Repeat every 5 minutes
     cron.schedule("*/15 * * * *", async () => {
       console.log("\n⏰ Scheduled check triggered...");
       await checkStocks();
@@ -208,7 +213,7 @@ process.on("uncaughtException", async (error) => {
   await sendTelegramMessage(`❌ Bot Error: ${error.message}`);
 });
 
-process.on("unhandledRejection", async (reason, promise) => {
+process.on("unhandledRejection", async (reason) => {
   console.error("❌ Unhandled Rejection:", reason);
   await sendTelegramMessage(`❌ Bot Promise Rejection: ${reason}`);
 });
@@ -219,24 +224,14 @@ process.on("SIGINT", async () => {
   process.exit(0);
 });
 
+// ==================== EXPRESS SERVER ====================
+const app = express();
+app.get("/", (req, res) => res.send("✅ Stock Bot is running on Railway!"));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
 // ==================== START BOT ====================
 main().catch(async (error) => {
   console.error("❌ Startup error:", error.message);
   await sendTelegramMessage(`❌ Bot failed to start: ${error.message}`);
 });
-
-
-const express = require("express");
-const app = express();
-
-// Health check endpoint
-app.get("/", (req, res) => {
-  res.send("✅ Stock Bot is running on Render!");
-});
-
-// Render requires binding to a port
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
-// const BOT_TOKEN = "8285018516:AAFfLO6o6aofB2S8W0eQV7-NA0JHpDyvCkM"; const CHAT_ID = "1642232617";
