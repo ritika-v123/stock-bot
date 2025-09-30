@@ -11,28 +11,26 @@ if (!BOT_TOKEN || !CHAT_ID) {
   process.exit(1);
 }
 
-// Load stock symbols from file (symbols.txt)
+// ==================== STOCK LIST ====================
 const stockSymbols = fs.readFileSync("symbols.txt", "utf-8")
   .split(/\r?\n/)
   .map(line => line.trim())
   .filter(line => line.length > 0);
 
-const stockList = stockSymbols.map(sym => {
-  const name = sym.replace(".NS", "").replace(".BO", "");
-  return { name, symbol: sym };
-});
+const stockList = stockSymbols.map(sym => ({
+  name: sym.replace(".NS", "").replace(".BO", ""),
+  symbol: sym,
+}));
 
 // ==================== TELEGRAM ====================
 async function sendTelegramMessage(message) {
   try {
     console.log(`📤 Sending: ${message.substring(0, 50)}...`);
-
     const response = await axios.post(
       `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
       { chat_id: String(CHAT_ID), text: message },
       { headers: { "Content-Type": "application/json" }, timeout: 15000 }
     );
-
     console.log(`✅ Message sent (ID: ${response.data.result.message_id})`);
     return true;
   } catch (error) {
@@ -47,7 +45,7 @@ async function fetchStockPrice(symbol) {
     console.log(`🔍 Fetching ${symbol}...`);
 
     const response = await axios.get(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=3mo`,
+      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=5d`,
       {
         timeout: 12000,
         headers: {
@@ -60,37 +58,47 @@ async function fetchStockPrice(symbol) {
     const result = response.data?.chart?.result?.[0];
     if (!result) return null;
 
-    const price = result.meta?.regularMarketPrice;
-    const prevClose = result.meta?.chartPreviousClose;
-
+    const timestamps = result.timestamp || [];
     const closes = result.indicators?.quote?.[0]?.close || [];
-    const validCloses = closes.filter(c => c !== null && !isNaN(c));
 
+    // Merge timestamps & closes, filter invalid
+    const validData = timestamps
+      .map((ts, i) => ({ time: ts, close: closes[i] }))
+      .filter(d => d.close !== null && !isNaN(d.close));
+
+    if (validData.length < 2) return null;
+
+    // Latest and previous close
+    const lastData = validData[validData.length - 1];
+    const prevData = validData[validData.length - 2];
+
+    const price = lastData.close;
+    const prevClose = prevData.close;
+
+    // Convert timestamp to IST
+    const lastDate = new Date(lastData.time * 1000).toLocaleString("en-IN", {
+      timeZone: "Asia/Kolkata",
+    });
+
+    // Calculate averages
     let avg3m = null;
     let avg1w = null;
 
-    if (validCloses.length > 0) {
-      // 3 months avg
-      const sum3m = validCloses.reduce((a, b) => a + b, 0);
-      avg3m = sum3m / validCloses.length;
-
-      // 1 week avg (last 7 closes)
-      const last7 = validCloses.slice(-7);
-      if (last7.length > 0) {
-        const sum1w = last7.reduce((a, b) => a + b, 0);
-        avg1w = sum1w / last7.length;
-      }
+    if (validData.length > 0) {
+      avg3m = validData.reduce((sum, d) => sum + d.close, 0) / validData.length;
+      const last7 = validData.slice(-7);
+      avg1w = last7.reduce((sum, d) => sum + d.close, 0) / last7.length;
     }
 
-    if (price && prevClose) {
-      console.log(
-        `✅ ${symbol}: Current ₹${price.toFixed(2)}, PrevClose ₹${prevClose.toFixed(2)}, 1W Avg ₹${avg1w?.toFixed(2)}, 3M Avg ₹${avg3m?.toFixed(2)}`
-      );
-      return { price, prevClose, avg3m, avg1w };
-    } else {
-      console.log(`⚠️ ${symbol}: Missing price/close data`);
-      return null;
-    }
+    console.log(
+      `✅ ${symbol}: Current ₹${price.toFixed(2)}, PrevClose ₹${prevClose.toFixed(
+        2
+      )}, 1W Avg ₹${avg1w?.toFixed(2)}, 3M Avg ₹${avg3m?.toFixed(
+        2
+      )}, Time: ${lastDate}`
+    );
+
+    return { price, prevClose, avg3m, avg1w, lastDate };
   } catch (error) {
     console.error(`❌ Error fetching ${symbol}:`, error.message);
     return null;
@@ -100,7 +108,7 @@ async function fetchStockPrice(symbol) {
 // ==================== STOCK CHECK ====================
 async function checkStocks() {
   console.log(`\n🔍 === STOCK CHECK STARTED ===`);
-  console.log(`Time: ${new Date().toLocaleString()}`);
+  console.log(`Time: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`);
 
   let messagesCount = 0;
 
@@ -111,7 +119,7 @@ async function checkStocks() {
       const data = await fetchStockPrice(stock.symbol);
 
       if (data) {
-        const { price, prevClose, avg3m, avg1w } = data;
+        const { price, prevClose, avg3m, avg1w, lastDate } = data;
         const change = price - prevClose;
         const changePercent = (change / prevClose) * 100;
 
@@ -119,8 +127,6 @@ async function checkStocks() {
           `📊 ${stock.name}: Current=₹${price.toFixed(
             2
           )}, PrevClose=₹${prevClose.toFixed(
-            2
-          )}, 1W Avg=₹${avg1w?.toFixed(2)}, 3M Avg=₹${avg3m?.toFixed(
             2
           )}, Change=${changePercent.toFixed(2)}%`
         );
@@ -137,7 +143,7 @@ async function checkStocks() {
 📉 3M Average: ₹${avg3m ? avg3m.toFixed(2) : "N/A"}
 💹 Change: ${change > 0 ? "+" : ""}₹${change.toFixed(2)}
 📊 Percentage: ${changePercent > 0 ? "+" : ""}${changePercent.toFixed(2)}%
-⏰ Time: ${new Date().toLocaleTimeString()}`;
+⏰ Last Update: ${lastDate}`;
 
           const sent = await sendTelegramMessage(message);
           if (sent) messagesCount++;
@@ -148,8 +154,9 @@ async function checkStocks() {
         console.log(`❌ Failed to get price for ${stock.name}`);
       }
 
+      // Small delay to avoid rate-limiting
       if (i < stockList.length - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
     } catch (error) {
       console.error(`❌ Error processing ${stock.name}:`, error.message);
@@ -164,7 +171,7 @@ async function checkStocks() {
     await sendTelegramMessage(`📊 Stock Check Complete ✅
 
 All ${stockList.length} stocks checked - no significant changes detected.
-Time: ${new Date().toLocaleTimeString()}`);
+Time: ${new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}`);
   }
 }
 
@@ -174,8 +181,8 @@ async function testBotOnStartup() {
   return await sendTelegramMessage(`🚀 Stock Bot Started! 
 
 ✅ Bot is online and ready
-📊 Tracking: ${stockList.map((s) => s.name).join(", ")}
-⏰ Started: ${new Date().toLocaleString()}
+📊 Tracking: ${stockList.map(s => s.name).join(", ")}
+⏰ Started: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
 🔄 Check interval: Every 15 minutes`);
 }
 
@@ -191,18 +198,19 @@ async function main() {
   }
 
   console.log("✅ Bot test successful!");
-  console.log("📊 Stocks to monitor:", stockList.map((s) => `${s.name} (${s.symbol})`).join(", "));
+  console.log("📊 Stocks to monitor:", stockList.map(s => `${s.name} (${s.symbol})`).join(", "));
 
-  // Initial check after 10 seconds
+  // Initial check after 10s
   setTimeout(async () => {
     console.log("🏃‍♂️ Running initial stock check...");
     await checkStocks();
 
-   cron.schedule("*/15 * * * *", async () => {
-  await checkStocks();
-}, {
-  timezone: "Asia/Kolkata"
-});
+    // Schedule every 15 min
+    cron.schedule("*/15 * * * *", async () => {
+      await checkStocks();
+    }, {
+      timezone: "Asia/Kolkata"
+    });
 
     console.log("⏰ Scheduled to check stocks every 15 minutes");
   }, 10000);
