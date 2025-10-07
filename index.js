@@ -2,7 +2,8 @@ const axios = require("axios");
 const cron = require("node-cron");
 const fs = require("fs");
 const express = require("express");
-// Configuration
+
+// ==================== CONFIGURATION ====================
 const BOT_TOKEN = "8285018516:AAFfLO6o6aofB2S8W0eQV7-NA0JHpDyvCkM";
 const CHAT_ID = "1642232617";
 
@@ -39,13 +40,26 @@ async function sendTelegramMessage(message) {
   }
 }
 
+// ==================== TIME HELPERS ====================
+function getCurrentIST() {
+  return new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+}
+
+function isMarketOpen() {
+  const now = new Date();
+  const hours = now.getHours();
+  const minutes = now.getMinutes();
+
+  // Market hours: 9:00 AM - 4:00 PM IST (approx)
+  return hours > 9 && hours < 16 || (hours === 9 && minutes >= 0) || (hours === 16 && minutes === 0);
+}
+
 // ==================== FETCH STOCK DATA ====================
 async function fetchStockPrice(symbol) {
   try {
     console.log(`🔍 Fetching ${symbol}...`);
-
     const response = await axios.get(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=5d`,
+      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=3mo`,
       {
         timeout: 12000,
         headers: {
@@ -61,7 +75,6 @@ async function fetchStockPrice(symbol) {
     const timestamps = result.timestamp || [];
     const closes = result.indicators?.quote?.[0]?.close || [];
 
-    // Merge timestamps & closes, filter invalid
     const validData = timestamps
       .map((ts, i) => ({ time: ts, close: closes[i] }))
       .filter(d => d.close !== null && !isNaN(d.close));
@@ -75,27 +88,18 @@ async function fetchStockPrice(symbol) {
     const price = lastData.close;
     const prevClose = prevData.close;
 
-    // Convert timestamp to IST
+    // Convert timestamp to IST string
     const lastDate = new Date(lastData.time * 1000).toLocaleString("en-IN", {
       timeZone: "Asia/Kolkata",
     });
 
-    // Calculate averages
-    let avg3m = null;
-    let avg1w = null;
-
-    if (validData.length > 0) {
-      avg3m = validData.reduce((sum, d) => sum + d.close, 0) / validData.length;
-      const last7 = validData.slice(-7);
-      avg1w = last7.reduce((sum, d) => sum + d.close, 0) / last7.length;
-    }
+    // Calculate averages (weekly = last 7 entries, 3M = all)
+    const last7 = validData.slice(-7);
+    const avg1w = last7.reduce((sum, d) => sum + d.close, 0) / last7.length;
+    const avg3m = validData.reduce((sum, d) => sum + d.close, 0) / validData.length;
 
     console.log(
-      `✅ ${symbol}: Current ₹${price.toFixed(2)}, PrevClose ₹${prevClose.toFixed(
-        2
-      )}, 1W Avg ₹${avg1w?.toFixed(2)}, 3M Avg ₹${avg3m?.toFixed(
-        2
-      )}, Time: ${lastDate}`
+      `✅ ${symbol}: Current ₹${price.toFixed(2)}, Prev ₹${prevClose.toFixed(2)}, 1W Avg ₹${avg1w.toFixed(2)}, 3M Avg ₹${avg3m.toFixed(2)}, Time: ${lastDate}`
     );
 
     return { price, prevClose, avg3m, avg1w, lastDate };
@@ -107,8 +111,14 @@ async function fetchStockPrice(symbol) {
 
 // ==================== STOCK CHECK ====================
 async function checkStocks() {
+  const nowIST = getCurrentIST();
   console.log(`\n🔍 === STOCK CHECK STARTED ===`);
-  console.log(`Time: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`);
+  console.log(`🕒 Time: ${nowIST}`);
+
+  if (!isMarketOpen()) {
+    console.log("⏰ Market is closed. Skipping alerts.");
+    return;
+  }
 
   let messagesCount = 0;
 
@@ -126,7 +136,7 @@ async function checkStocks() {
         console.log(
           `📊 ${stock.name}: Current=₹${price.toFixed(
             2
-          )}, PrevClose=₹${prevClose.toFixed(
+          )}, Prev=₹${prevClose.toFixed(
             2
           )}, Change=${changePercent.toFixed(2)}%`
         );
@@ -154,7 +164,7 @@ async function checkStocks() {
         console.log(`❌ Failed to get price for ${stock.name}`);
       }
 
-      // Small delay to avoid rate-limiting
+      // Delay to avoid rate-limiting
       if (i < stockList.length - 1) {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
@@ -170,8 +180,8 @@ async function checkStocks() {
   if (messagesCount === 0) {
     await sendTelegramMessage(`📊 Stock Check Complete ✅
 
-All ${stockList.length} stocks checked - no significant changes detected.
-Time: ${new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}`);
+All ${stockList.length} stocks checked — no major movements.
+🕒 Time: ${nowIST}`);
   }
 }
 
@@ -182,8 +192,8 @@ async function testBotOnStartup() {
 
 ✅ Bot is online and ready
 📊 Tracking: ${stockList.map(s => s.name).join(", ")}
-⏰ Started: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
-🔄 Check interval: Every 15 minutes`);
+⏰ Started: ${getCurrentIST()}
+🔄 Check interval: Every 15 minutes (9 AM - 4 PM)`);
 }
 
 // ==================== MAIN ====================
@@ -198,40 +208,21 @@ async function main() {
   }
 
   console.log("✅ Bot test successful!");
-  console.log("📊 Stocks to monitor:", stockList.map(s => `${s.name} (${s.symbol})`).join(", "));
+  console.log("📊 Monitoring:", stockList.map(s => s.name).join(", "));
 
-  // Initial check after 10s
+  // Initial check after 10 seconds
   setTimeout(async () => {
     console.log("🏃‍♂️ Running initial stock check...");
     await checkStocks();
 
-    // Schedule every 15 min
+    // Run every 15 minutes
     cron.schedule("*/15 * * * *", async () => {
       await checkStocks();
-    }, {
-      timezone: "Asia/Kolkata"
-    });
+    }, { timezone: "Asia/Kolkata" });
 
-    console.log("⏰ Scheduled to check stocks every 15 minutes");
+    console.log("⏰ Scheduled to check stocks every 15 minutes between 9 AM and 4 PM.");
   }, 10000);
 }
-
-// ==================== ERROR HANDLING ====================
-process.on("uncaughtException", async (error) => {
-  console.error("❌ Uncaught Exception:", error.message);
-  await sendTelegramMessage(`❌ Bot Error: ${error.message}`);
-});
-
-process.on("unhandledRejection", async (reason) => {
-  console.error("❌ Unhandled Rejection:", reason);
-  await sendTelegramMessage(`❌ Bot Promise Rejection: ${reason}`);
-});
-
-process.on("SIGINT", async () => {
-  console.log("\n🛑 Shutting down...");
-  await sendTelegramMessage("🛑 Stock Bot shutting down. Monitoring stopped.");
-  process.exit(0);
-});
 
 // ==================== EXPRESS SERVER ====================
 const app = express();
