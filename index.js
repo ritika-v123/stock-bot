@@ -47,11 +47,22 @@ function getCurrentIST() {
 
 function isMarketOpen() {
   const now = new Date();
-  const hours = now.getHours();
-  const minutes = now.getMinutes();
+  const istTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  const hours = istTime.getHours();
+  const minutes = istTime.getMinutes();
+  const day = istTime.getDay();
 
-  // Market hours: 9:00 AM - 4:00 PM IST (approx)
-  return hours > 9 && hours < 16 || (hours === 9 && minutes >= 0) || (hours === 16 && minutes === 0);
+  // Market is closed on weekends (0 = Sunday, 6 = Saturday)
+  if (day === 0 || day === 6) {
+    return false;
+  }
+
+  // Market hours: 9:15 AM - 3:30 PM IST
+  const currentMinutes = hours * 60 + minutes;
+  const marketOpen = 9 * 60 + 15; // 9:15 AM
+  const marketClose = 15 * 60 + 30; // 3:30 PM
+
+  return currentMinutes >= marketOpen && currentMinutes <= marketClose;
 }
 
 // ==================== FETCH STOCK DATA ====================
@@ -93,13 +104,18 @@ async function fetchStockPrice(symbol) {
       timeZone: "Asia/Kolkata",
     });
 
-    // Calculate averages (weekly = last 7 entries, 3M = all)
-    const last7 = validData.slice(-7);
-    const avg1w = last7.reduce((sum, d) => sum + d.close, 0) / last7.length;
+    // Calculate averages
+    // Weekly average: last 5 trading days (approximately 1 week)
+    const last5Days = validData.slice(-5);
+    const avg1w = last5Days.length > 0 
+      ? last5Days.reduce((sum, d) => sum + d.close, 0) / last5Days.length 
+      : null;
+    
+    // 3 month average: all available data
     const avg3m = validData.reduce((sum, d) => sum + d.close, 0) / validData.length;
 
     console.log(
-      `✅ ${symbol}: Current ₹${price.toFixed(2)}, Prev ₹${prevClose.toFixed(2)}, 1W Avg ₹${avg1w.toFixed(2)}, 3M Avg ₹${avg3m.toFixed(2)}, Time: ${lastDate}`
+      `✅ ${symbol}: Current ₹${price.toFixed(2)}, Prev ₹${prevClose.toFixed(2)}, 1W Avg ₹${avg1w ? avg1w.toFixed(2) : 'N/A'}, 3M Avg ₹${avg3m.toFixed(2)}, Time: ${lastDate}`
     );
 
     return { price, prevClose, avg3m, avg1w, lastDate };
@@ -188,12 +204,19 @@ All ${stockList.length} stocks checked — no major movements.
 // ==================== STARTUP TEST ====================
 async function testBotOnStartup() {
   console.log("🧪 Testing bot connectivity...");
+  
+  // Only send startup message during market hours
+  if (!isMarketOpen()) {
+    console.log("⏰ Market is closed. Startup message will not be sent.");
+    return true; // Return true to allow bot to continue running
+  }
+  
   return await sendTelegramMessage(`🚀 Stock Bot Started! 
 
 ✅ Bot is online and ready
 📊 Tracking: ${stockList.map(s => s.name).join(", ")}
 ⏰ Started: ${getCurrentIST()}
-🔄 Check interval: Every 15 minutes (9 AM - 4 PM)`);
+🔄 Check interval: Every 15 minutes (9:15 AM - 3:30 PM)`);
 }
 
 // ==================== MAIN ====================
@@ -202,36 +225,45 @@ async function main() {
   console.log(`👤 Sending to: ${CHAT_ID}`);
 
   const botWorking = await testBotOnStartup();
-  if (!botWorking) {
-    console.log("❌ Bot test failed! Exiting...");
+  if (!botWorking && isMarketOpen()) {
+    console.log("❌ Bot test failed during market hours! Exiting...");
     process.exit(1);
   }
 
-  console.log("✅ Bot test successful!");
+  console.log("✅ Bot initialized successfully!");
   console.log("📊 Monitoring:", stockList.map(s => s.name).join(", "));
 
-  // Initial check after 10 seconds
+  // Initial check after 10 seconds (only if market is open)
   setTimeout(async () => {
-    console.log("🏃‍♂️ Running initial stock check...");
-    await checkStocks();
-
-    // Run every 15 minutes
-    cron.schedule("*/15 * * * *", async () => {
+    if (isMarketOpen()) {
+      console.log("🏃‍♂️ Running initial stock check...");
       await checkStocks();
-    }, { timezone: "Asia/Kolkata" });
-
-    console.log("⏰ Scheduled to check stocks every 15 minutes between 9 AM and 4 PM.");
+    } else {
+      console.log("⏰ Market is closed. Waiting for market hours...");
+    }
   }, 10000);
+
+  // Run every 15 minutes - checkStocks() will verify market hours internally
+  cron.schedule("*/15 * * * *", async () => {
+    await checkStocks();
+  }, { timezone: "Asia/Kolkata" });
+
+  console.log("⏰ Scheduled to check stocks every 15 minutes (9:15 AM - 3:30 PM IST).");
 }
 
 // ==================== EXPRESS SERVER ====================
 const app = express();
-app.get("/", (req, res) => res.send("✅ Stock Bot is running on Railway!"));
+app.get("/", (req, res) => {
+  const marketStatus = isMarketOpen() ? "🟢 OPEN" : "🔴 CLOSED";
+  res.send(`✅ Stock Bot is running on Railway!\n\nMarket Status: ${marketStatus}\nTime: ${getCurrentIST()}`);
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 
 // ==================== START BOT ====================
 main().catch(async (error) => {
   console.error("❌ Startup error:", error.message);
-  await sendTelegramMessage(`❌ Bot failed to start: ${error.message}`);
+  if (isMarketOpen()) {
+    await sendTelegramMessage(`❌ Bot failed to start: ${error.message}`);
+  }
 });
