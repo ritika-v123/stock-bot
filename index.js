@@ -89,8 +89,47 @@ async function fetchStockPrice(symbol) {
   try {
     console.log(`🔍 Fetching ${symbol}...`);
 
-    // Fetch 3 months of data for accurate averages
-    const response = await axios.get(
+    // Fetch current price (5 days)
+    const currentResponse = await axios.get(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=5d`,
+      {
+        timeout: 12000,
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+        },
+      }
+    );
+
+    const currentResult = currentResponse.data?.chart?.result?.[0];
+    if (!currentResult) return null;
+
+    const timestamps = currentResult.timestamp || [];
+    const closes = currentResult.indicators?.quote?.[0]?.close || [];
+
+    // Merge timestamps & closes, filter invalid
+    const currentData = timestamps
+      .map((ts, i) => ({ time: ts, close: closes[i] }))
+      .filter(d => d.close !== null && !isNaN(d.close));
+
+    if (currentData.length < 2) return null;
+
+    // Current price is the LATEST available (today if market open, or yesterday's close if closed)
+    const lastData = currentData[currentData.length - 1];  // Current/Latest price
+    const prevData = currentData[currentData.length - 2];  // Previous day's closing price
+
+    const price = lastData.close;  // Current price (today's or last available)
+    const prevClose = prevData.close;  // Previous closing price
+
+    // Convert timestamp to IST
+    const lastDate = new Date(lastData.time * 1000).toLocaleString("en-IN", {
+      timeZone: "Asia/Kolkata",
+      dateStyle: "medium",
+      timeStyle: "short"
+    });
+
+    // Fetch 3 months data for averages
+    const historyResponse = await axios.get(
       `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=3mo`,
       {
         timeout: 12000,
@@ -101,48 +140,35 @@ async function fetchStockPrice(symbol) {
       }
     );
 
-    const result = response.data?.chart?.result?.[0];
-    if (!result) return null;
+    const historyResult = historyResponse.data?.chart?.result?.[0];
+    let avg1w = null;
+    let avg3m = null;
 
-    const timestamps = result.timestamp || [];
-    const closes = result.indicators?.quote?.[0]?.close || [];
+    if (historyResult) {
+      const historyTimestamps = historyResult.timestamp || [];
+      const historyCloses = historyResult.indicators?.quote?.[0]?.close || [];
 
-    // Merge timestamps & closes, filter invalid
-    const validData = timestamps
-      .map((ts, i) => ({ time: ts, close: closes[i] }))
-      .filter(d => d.close !== null && !isNaN(d.close));
+      const historyData = historyTimestamps
+        .map((ts, i) => ({ time: ts, close: historyCloses[i] }))
+        .filter(d => d.close !== null && !isNaN(d.close));
 
-    if (validData.length < 2) return null;
+      // Weekly average: last 5-7 trading days
+      if (historyData.length > 0) {
+        const weeklyDataPoints = Math.min(7, historyData.length);
+        const lastWeek = historyData.slice(-weeklyDataPoints);
+        avg1w = lastWeek.reduce((sum, d) => sum + d.close, 0) / lastWeek.length;
+      }
 
-    // Latest and previous close
-    const lastData = validData[validData.length - 1];
-    const prevData = validData[validData.length - 2];
-
-    const price = lastData.close;
-    const prevClose = prevData.close;
-
-    // Convert timestamp to IST
-    const lastDate = new Date(lastData.time * 1000).toLocaleString("en-IN", {
-      timeZone: "Asia/Kolkata",
-      dateStyle: "medium",
-      timeStyle: "short"
-    });
-
-    // Calculate averages
-    // Weekly average: last 5-7 trading days (approximately 1 week)
-    const weeklyDataPoints = Math.min(7, validData.length);
-    const lastWeek = validData.slice(-weeklyDataPoints);
-    const avg1w = lastWeek.reduce((sum, d) => sum + d.close, 0) / lastWeek.length;
-    
-    // 3 month average: all available data
-    const avg3m = validData.reduce((sum, d) => sum + d.close, 0) / validData.length;
+      // 3 month average: all available data
+      if (historyData.length > 0) {
+        avg3m = historyData.reduce((sum, d) => sum + d.close, 0) / historyData.length;
+      }
+    }
 
     console.log(
       `✅ ${symbol}: Current ₹${price.toFixed(2)}, PrevClose ₹${prevClose.toFixed(
         2
-      )}, 1W Avg ₹${avg1w.toFixed(2)} (${weeklyDataPoints} days), 3M Avg ₹${avg3m.toFixed(
-        2
-      )} (${validData.length} days), Time: ${lastDate}`
+      )}, 1W Avg ₹${avg1w ? avg1w.toFixed(2) : 'N/A'}, 3M Avg ₹${avg3m ? avg3m.toFixed(2) : 'N/A'}, Time: ${lastDate}`
     );
 
     return { price, prevClose, avg3m, avg1w, lastDate };
