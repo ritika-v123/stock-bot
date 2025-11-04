@@ -142,6 +142,7 @@ async function fetchStockPrice(symbol) {
 
     const historyResult = historyResponse.data?.chart?.result?.[0];
     let avg1w = null;
+    let avg1m = null;
     let avg3m = null;
 
     if (historyResult) {
@@ -159,6 +160,13 @@ async function fetchStockPrice(symbol) {
         avg1w = lastWeek.reduce((sum, d) => sum + d.close, 0) / lastWeek.length;
       }
 
+      // 1 Month average: last ~20-22 trading days (1 month)
+      if (historyData.length > 0) {
+        const monthlyDataPoints = Math.min(22, historyData.length);
+        const lastMonth = historyData.slice(-monthlyDataPoints);
+        avg1m = lastMonth.reduce((sum, d) => sum + d.close, 0) / lastMonth.length;
+      }
+
       // 3 month average: all available data
       if (historyData.length > 0) {
         avg3m = historyData.reduce((sum, d) => sum + d.close, 0) / historyData.length;
@@ -168,10 +176,10 @@ async function fetchStockPrice(symbol) {
     console.log(
       `✅ ${symbol}: Current ₹${price.toFixed(2)}, PrevClose ₹${prevClose.toFixed(
         2
-      )}, 1W Avg ₹${avg1w ? avg1w.toFixed(2) : 'N/A'}, 3M Avg ₹${avg3m ? avg3m.toFixed(2) : 'N/A'}, Time: ${lastDate}`
+      )}, 1W Avg ₹${avg1w ? avg1w.toFixed(2) : 'N/A'}, 1M Avg ₹${avg1m ? avg1m.toFixed(2) : 'N/A'}, 3M Avg ₹${avg3m ? avg3m.toFixed(2) : 'N/A'}, Time: ${lastDate}`
     );
 
-    return { price, prevClose, avg3m, avg1w, lastDate };
+    return { price, prevClose, avg1w, avg1m, avg3m, lastDate };
   } catch (error) {
     console.error(`❌ Error fetching ${symbol}:`, error.message);
     return null;
@@ -199,7 +207,7 @@ async function checkStocks() {
       const data = await fetchStockPrice(stock.symbol);
 
       if (data) {
-        const { price, prevClose, avg3m, avg1w, lastDate } = data;
+        const { price, prevClose, avg1w, avg1m, avg3m, lastDate } = data;
         const change = price - prevClose;
         const changePercent = (change / prevClose) * 100;
 
@@ -220,6 +228,7 @@ async function checkStocks() {
 💰 Current Price: ₹${price.toFixed(2)}
 📊 Previous Close: ₹${prevClose.toFixed(2)}
 📉 1W Average: ₹${avg1w.toFixed(2)}
+📉 1M Average: ₹${avg1m.toFixed(2)}
 📉 3M Average: ₹${avg3m.toFixed(2)}
 💹 Change: ${change > 0 ? "+" : ""}₹${change.toFixed(2)}
 📊 Percentage: ${changePercent > 0 ? "+" : ""}${changePercent.toFixed(2)}%
